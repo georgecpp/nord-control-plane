@@ -56,16 +56,71 @@ jobs:
           git -C kernel apply \
             "$GITHUB_WORKSPACE/patches/kernel/0001-fix-disabled-kernelsu-build.patch"
 
+      - name: Restore Android Clang toolchain cache
+        id: clang-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            kernel/clang-llvm
+            clang-r530567.tar.gz.sha256
+          key: android-clang-r530567-linux-x86-v1
+
       - name: Fetch Android Clang toolchain
+        if: steps.clang-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --location --retry 3 \
-            "$CLANG_ARCHIVE" \
-            --output clang-r530567.tar.gz
+
+          archive=clang-r530567.tar.gz
+          downloaded=false
+
+          for attempt in 1 2 3; do
+            echo "Toolchain download attempt $attempt of 3"
+            rm -f "$archive"
+
+            if curl \
+              --fail \
+              --location \
+              --retry 5 \
+              --retry-all-errors \
+              --connect-timeout 30 \
+              --max-time 1800 \
+              "$CLANG_ARCHIVE" \
+              --output "$archive" \
+              && gzip -t "$archive" \
+              && tar -tzf "$archive" >/dev/null; then
+              downloaded=true
+              break
+            fi
+
+            echo "Downloaded archive was incomplete or invalid"
+          done
+
+          if [[ "$downloaded" != true ]]; then
+            echo "Unable to download a valid Clang archive after 3 attempts"
+            exit 1
+          fi
+
+          sha256sum "$archive" > clang-r530567.tar.gz.sha256
           mkdir -p kernel/clang-llvm
-          tar -xzf clang-r530567.tar.gz -C kernel/clang-llvm
-          sha256sum clang-r530567.tar.gz > clang-r530567.tar.gz.sha256
+          tar -xzf "$archive" -C kernel/clang-llvm
+
+      - name: Verify Android Clang toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x kernel/clang-llvm/bin/clang
+          test -s clang-r530567.tar.gz.sha256
+          kernel/clang-llvm/bin/clang --version
+
+      - name: Save Android Clang toolchain cache
+        if: steps.clang-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            kernel/clang-llvm
+            clang-r530567.tar.gz.sha256
+          key: android-clang-r530567-linux-x86-v1
 
       - name: Generate and verify kernel configuration
         shell: bash
