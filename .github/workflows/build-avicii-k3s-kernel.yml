@@ -18,7 +18,7 @@ jobs:
 
     steps:
       - name: Check out control-plane repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install build dependencies
         run: |
@@ -46,6 +46,15 @@ jobs:
           git -C kernel fetch --depth=1 origin "$KERNEL_COMMIT"
           git -C kernel checkout --detach FETCH_HEAD
           test "$(git -C kernel rev-parse HEAD)" = "$KERNEL_COMMIT"
+
+      - name: Apply local kernel fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C kernel apply --check \
+            "$GITHUB_WORKSPACE/patches/kernel/0001-fix-disabled-kernelsu-build.patch"
+          git -C kernel apply \
+            "$GITHUB_WORKSPACE/patches/kernel/0001-fix-disabled-kernelsu-build.patch"
 
       - name: Fetch Android Clang toolchain
         shell: bash
@@ -111,6 +120,15 @@ jobs:
 
           make -C kernel ARCH=arm64 O=out -j"$(nproc)" \
             2>&1 | tee kernel-build.log
+
+      - name: Upload failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: avicii-k3s-kernel-failure-log
+          path: kernel-build.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Collect non-flashable audit artifacts
         shell: bash
