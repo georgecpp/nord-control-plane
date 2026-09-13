@@ -1,0 +1,149 @@
+name: Build avicii K3s kernel
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    env:
+      KERNEL_REPOSITORY: https://github.com/OnePlus-Nord-OSS-Development/android_kernel_oneplus_avicii.git
+      KERNEL_COMMIT: c43a2a9e1c9e67c814910286f3e6b77c80a8050d
+      CLANG_ARCHIVE: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r530567.tar.gz
+
+    steps:
+      - name: Check out control-plane repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            bc \
+            bison \
+            build-essential \
+            ccache \
+            cpio \
+            device-tree-compiler \
+            flex \
+            git \
+            libelf-dev \
+            libssl-dev \
+            python3 \
+            zip
+
+      - name: Fetch pinned kernel source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init kernel
+          git -C kernel remote add origin "$KERNEL_REPOSITORY"
+          git -C kernel fetch --depth=1 origin "$KERNEL_COMMIT"
+          git -C kernel checkout --detach FETCH_HEAD
+          test "$(git -C kernel rev-parse HEAD)" = "$KERNEL_COMMIT"
+
+      - name: Fetch Android Clang toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            "$CLANG_ARCHIVE" \
+            --output clang-r530567.tar.gz
+          mkdir -p kernel/clang-llvm
+          tar -xzf clang-r530567.tar.gz -C kernel/clang-llvm
+          sha256sum clang-r530567.tar.gz > clang-r530567.tar.gz.sha256
+
+      - name: Generate and verify kernel configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -s -C kernel ARCH=arm64 O=out \
+            avicii_defconfig debugfs.config
+
+          KCONFIG_CONFIG="$PWD/kernel/out/.config" \
+            kernel/scripts/kconfig/merge_config.sh -m \
+            kernel/out/.config \
+            "$GITHUB_WORKSPACE/configs/kernel/k3s.config"
+
+          make -s -C kernel ARCH=arm64 O=out olddefconfig
+          kernel/scripts/config --file kernel/out/.config \
+            --set-str LOCALVERSION "-NordK3s-v0.1"
+          kernel/scripts/config --file kernel/out/.config \
+            --disable LOCALVERSION_AUTO
+          make -s -C kernel ARCH=arm64 O=out olddefconfig
+
+          while IFS= read -r requested; do
+            case "$requested" in
+              CONFIG_*=*) ;;
+              *) continue ;;
+            esac
+
+            symbol="${requested%%=*}"
+            actual="$(grep -E "^${symbol}=" kernel/out/.config || true)"
+            if [[ "$actual" != "$requested" ]]; then
+              echo "Configuration mismatch: requested '$requested', got '$actual'"
+              exit 1
+            fi
+          done < configs/kernel/k3s.config
+
+          grep -qx '# CONFIG_KSU is not set' kernel/out/.config
+
+      - name: Build kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export BRAND_SHOW_FLAG=oneplus
+          export PATH="$PWD/kernel/clang-llvm/bin:$PATH"
+          export CC="ccache clang"
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export LLVM=1
+          export LLVM_IAS=1
+          export DTC_EXT=/usr/bin/dtc
+
+          make -C kernel ARCH=arm64 O=out -j"$(nproc)" \
+            2>&1 | tee kernel-build.log
+
+      - name: Collect non-flashable audit artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb dist/
+          cp kernel/out/arch/arm64/boot/dtbo.img dist/dtbo-raw.img
+          cp kernel/out/.config dist/kernel.config
+          cp kernel-build.log dist/
+          cp clang-r530567.tar.gz.sha256 dist/
+          git -C kernel rev-parse HEAD > dist/SOURCE_COMMIT
+          printf '%s\n' \
+            'AUDIT ARTIFACTS ONLY.' \
+            'Do not flash Image.gz-dtb or dtbo-raw.img directly.' \
+            'A test boot image must be produced from the backed-up active boot image.' \
+            > dist/DO-NOT-FLASH.txt
+          (
+            cd dist
+            sha256sum \
+              Image.gz-dtb \
+              dtbo-raw.img \
+              kernel.config \
+              kernel-build.log \
+              SOURCE_COMMIT \
+              DO-NOT-FLASH.txt \
+              > SHA256SUMS
+          )
+
+      - name: Upload kernel audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: avicii-k3s-kernel
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
