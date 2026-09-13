@@ -1,0 +1,2 @@
+# Applied in this order to the source commit pinned in configs/kernel/build.env.
+0001-fix-disabled-kernelsu-build.patch

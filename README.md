@@ -7,7 +7,7 @@ Nord AC2003 into a reproducible ARM64 home-server and Kubernetes node.
 
 - Device: OnePlus Nord AC2003
 - Codename: `avicii`
-- Operating system: LineageOS 21 / Android 14
+- Operating system: CherishOS 14 / Android 14
 - Architecture: ARM64
 - Linux userspace: Debian or Alpine chroot
 - Container runtime: containerd
@@ -18,7 +18,7 @@ Nord AC2003 into a reproducible ARM64 home-server and Kubernetes node.
 This repository owns:
 
 - device-state identification and recovery;
-- Android and LineageOS installation procedures;
+- CherishOS baseline, recovery and upgrade procedures;
 - bootloader, recovery and partition documentation;
 - root configuration;
 - kernel capability auditing;
@@ -75,8 +75,7 @@ custom image has been booted or flashed to the phone yet.
 
 Retain the working CherishOS 14 installation as the Android hardware-support
 layer and replace only its kernel with a reproducibly built, container-capable
-kernel. Building or installing LineageOS is no longer part of the immediate
-bootstrap path.
+kernel. Replacing the Android ROM is outside the current bootstrap plan.
 
 ### Verified device baseline
 
@@ -151,6 +150,16 @@ The CI workflow now:
 4. merges and verifies every requested kernel option;
 5. compiles the kernel and DTBO successfully;
 6. publishes checksummed, non-flashable audit artifacts.
+
+The complete build recipe is version controlled:
+
+- `configs/kernel/build.env` pins the kernel source, source commit, compiler,
+  compiler checksum, build version and local version;
+- `configs/kernel/k3s.config` records every deliberately requested K3s option;
+- `patches/kernel/series` records the ordered source-patch set;
+- `patches/kernel/*.patch` records every source-code change;
+- each successful artifact contains the resolved configuration, configuration
+  delta, patch checksums, input manifest and output checksums.
 
 ### Current safety boundary
 

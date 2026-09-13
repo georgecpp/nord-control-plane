@@ -11,14 +11,18 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 90
 
-    env:
-      KERNEL_REPOSITORY: https://github.com/OnePlus-Nord-OSS-Development/android_kernel_oneplus_avicii.git
-      KERNEL_COMMIT: c43a2a9e1c9e67c814910286f3e6b77c80a8050d
-      CLANG_ARCHIVE: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r530567.tar.gz
-
     steps:
       - name: Check out control-plane repository
         uses: actions/checkout@v5
+
+      - name: Load pinned build inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          source configs/kernel/build.env
+          set +a
+          env | grep -E '^(KERNEL_|CLANG_)' >> "$GITHUB_ENV"
 
       - name: Install build dependencies
         run: |
@@ -53,10 +57,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git -C kernel apply --check \
-            "$GITHUB_WORKSPACE/patches/kernel/0001-fix-disabled-kernelsu-build.patch"
-          git -C kernel apply \
-            "$GITHUB_WORKSPACE/patches/kernel/0001-fix-disabled-kernelsu-build.patch"
+          while IFS= read -r patch; do
+            case "$patch" in
+              ''|'#'*) continue ;;
+            esac
+            patch_path="$GITHUB_WORKSPACE/patches/kernel/$patch"
+            test -f "$patch_path"
+            git -C kernel apply --check "$patch_path"
+            git -C kernel apply "$patch_path"
+          done < patches/kernel/series
 
       - name: Restore Android Clang toolchain cache
         id: clang-cache
@@ -64,8 +73,8 @@ jobs:
         with:
           path: |
             kernel/clang-llvm
-            clang-r530567.tar.gz.sha256
-          key: android-clang-r530567-linux-x86-v1
+            ${{ env.CLANG_REVISION }}.tar.gz.sha256
+          key: android-${{ env.CLANG_REVISION }}-${{ env.CLANG_ARCHIVE_SHA256 }}
 
       - name: Fetch Android Clang toolchain
         if: steps.clang-cache.outputs.cache-hit != 'true'
@@ -73,7 +82,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          archive=clang-r530567.tar.gz
+          archive="${CLANG_REVISION}.tar.gz"
+          checksum_file="${archive}.sha256"
           downloaded=false
 
           for attempt in 1 2 3; do
@@ -91,8 +101,14 @@ jobs:
               --output "$archive" \
               && gzip -t "$archive" \
               && tar -tzf "$archive" >/dev/null; then
-              downloaded=true
-              break
+              actual_sha="$(sha256sum "$archive" | awk '{print $1}')"
+              if [[ "$actual_sha" == "$CLANG_ARCHIVE_SHA256" ]]; then
+                downloaded=true
+                break
+              fi
+              echo "Toolchain checksum mismatch"
+              echo "Expected: $CLANG_ARCHIVE_SHA256"
+              echo "Actual:   $actual_sha"
             fi
 
             echo "Downloaded archive was incomplete or invalid"
@@ -103,7 +119,7 @@ jobs:
             exit 1
           fi
 
-          sha256sum "$archive" > clang-r530567.tar.gz.sha256
+          sha256sum "$archive" > "$checksum_file"
           mkdir -p kernel/clang-llvm
           tar -xzf "$archive" -C kernel/clang-llvm
 
@@ -112,7 +128,10 @@ jobs:
         run: |
           set -euo pipefail
           test -x kernel/clang-llvm/bin/clang
-          test -s clang-r530567.tar.gz.sha256
+          checksum_file="${CLANG_REVISION}.tar.gz.sha256"
+          test -s "$checksum_file"
+          recorded_sha="$(awk '{print $1}' "$checksum_file")"
+          test "$recorded_sha" = "$CLANG_ARCHIVE_SHA256"
           kernel/clang-llvm/bin/clang --version
 
       - name: Save Android Clang toolchain cache
@@ -121,8 +140,8 @@ jobs:
         with:
           path: |
             kernel/clang-llvm
-            clang-r530567.tar.gz.sha256
-          key: android-clang-r530567-linux-x86-v1
+            ${{ env.CLANG_REVISION }}.tar.gz.sha256
+          key: android-${{ env.CLANG_REVISION }}-${{ env.CLANG_ARCHIVE_SHA256 }}
 
       - name: Generate and verify kernel configuration
         shell: bash
@@ -130,6 +149,7 @@ jobs:
           set -euo pipefail
           make -s -C kernel ARCH=arm64 O=out \
             avicii_defconfig debugfs.config
+          cp kernel/out/.config kernel/out/base.config
 
           KCONFIG_CONFIG="$PWD/kernel/out/.config" \
             kernel/scripts/kconfig/merge_config.sh -m \
@@ -138,7 +158,7 @@ jobs:
 
           make -s -C kernel ARCH=arm64 O=out olddefconfig
           kernel/scripts/config --file kernel/out/.config \
-            --set-str LOCALVERSION "-NordK3s-v0.1"
+            --set-str LOCALVERSION "$KERNEL_LOCALVERSION"
           kernel/scripts/config --file kernel/out/.config \
             --disable LOCALVERSION_AUTO
           make -s -C kernel ARCH=arm64 O=out olddefconfig
@@ -196,8 +216,45 @@ jobs:
           cp kernel/out/arch/arm64/boot/dtbo.img dist/dtbo-raw.img
           cp kernel/out/.config dist/kernel.config
           cp kernel-build.log dist/
-          cp clang-r530567.tar.gz.sha256 dist/
+          cp "${CLANG_REVISION}.tar.gz.sha256" dist/
+          cp configs/kernel/build.env dist/
+          cp configs/kernel/k3s.config dist/requested-k3s.config
+          cp patches/kernel/series dist/PATCH_SERIES
+          python2 kernel/scripts/diffconfig \
+            kernel/out/base.config kernel/out/.config \
+            > dist/base-to-final.diffconfig
+          (
+            cd patches/kernel
+            while IFS= read -r patch; do
+              case "$patch" in
+                ''|'#'*) continue ;;
+              esac
+              sha256sum "$patch"
+            done < series
+          ) > "$GITHUB_WORKSPACE/dist/PATCHES.sha256"
           git -C kernel rev-parse HEAD > dist/SOURCE_COMMIT
+          {
+            printf 'manifest_format=1\n'
+            printf 'kernel_build_version=%s\n' "$KERNEL_BUILD_VERSION"
+            printf 'control_plane_commit=%s\n' "$GITHUB_SHA"
+            printf 'workflow_run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'kernel_repository=%s\n' "$KERNEL_REPOSITORY"
+            printf 'kernel_commit=%s\n' "$KERNEL_COMMIT"
+            printf 'clang_revision=%s\n' "$CLANG_REVISION"
+            printf 'clang_archive_sha256=%s\n' "$CLANG_ARCHIVE_SHA256"
+            printf 'base_defconfigs=avicii_defconfig debugfs.config\n'
+            printf 'kernel_localversion=%s\n' "$KERNEL_LOCALVERSION"
+            printf 'requested_config_sha256=%s\n' \
+              "$(sha256sum configs/kernel/k3s.config | awk '{print $1}')"
+            printf 'patch_series_sha256=%s\n' \
+              "$(sha256sum patches/kernel/series | awk '{print $1}')"
+            printf 'final_config_sha256=%s\n' \
+              "$(sha256sum dist/kernel.config | awk '{print $1}')"
+            printf 'kernel_image_sha256=%s\n' \
+              "$(sha256sum dist/Image.gz-dtb | awk '{print $1}')"
+            printf 'dtbo_image_sha256=%s\n' \
+              "$(sha256sum dist/dtbo-raw.img | awk '{print $1}')"
+          } > dist/BUILD-MANIFEST.txt
           printf '%s\n' \
             'AUDIT ARTIFACTS ONLY.' \
             'Do not flash Image.gz-dtb or dtbo-raw.img directly.' \
@@ -210,6 +267,13 @@ jobs:
               dtbo-raw.img \
               kernel.config \
               kernel-build.log \
+              build.env \
+              requested-k3s.config \
+              PATCH_SERIES \
+              PATCHES.sha256 \
+              base-to-final.diffconfig \
+              BUILD-MANIFEST.txt \
+              "${CLANG_REVISION}.tar.gz.sha256" \
               SOURCE_COMMIT \
               DO-NOT-FLASH.txt \
               > SHA256SUMS
