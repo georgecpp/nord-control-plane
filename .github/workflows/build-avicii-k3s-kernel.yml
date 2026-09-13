@@ -34,8 +34,10 @@ jobs:
             git \
             libelf-dev \
             libssl-dev \
+            python2 \
             python3 \
             zip
+          python2 --version
 
       - name: Fetch pinned kernel source
         shell: bash
