@@ -32,7 +32,7 @@ Checksummed backups exist outside this repository for `boot`, `recovery`,
 ## Custom-kernel status
 
 - Build version: `0.1.0`
-- Successful CI run: `34780781622`
+- Successful CI run: `35522034398`
 - Kernel source commit: `c43a2a9e1c9e67c814910286f3e6b77c80a8050d`
 - Compiler: `clang-r530567`
 - Build result: successful

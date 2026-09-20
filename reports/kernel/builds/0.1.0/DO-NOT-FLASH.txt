@@ -1,0 +1,3 @@
+AUDIT ARTIFACTS ONLY.
+Do not flash Image.gz-dtb or dtbo-raw.img directly.
+A test boot image must be produced from the backed-up active boot image.
