@@ -1,0 +1,156 @@
+name: Build Debian ARM64 rootfs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-debian-arm64-rootfs
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out control-plane repository
+        uses: actions/checkout@v5
+
+      - name: Load and validate pinned inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          source configs/linux/rootfs.env
+
+          required=(
+            ROOTFS_BUILD_VERSION
+            DEBIAN_SUITE
+            DEBIAN_VERSION
+            DEBIAN_SNAPSHOT
+            TARGET_ARCH
+            DEBIAN_ARTIFACT_REPOSITORY
+            DEBIAN_ARTIFACT_COMMIT
+            DEBIAN_ROOTFS_PATH
+            DEBIAN_ROOTFS_SHA256
+          )
+
+          for name in "${required[@]}"; do
+            test -n "${!name:-}" || {
+              echo "Missing required input: $name" >&2
+              exit 1
+            }
+          done
+
+          test "$TARGET_ARCH" = arm64
+          test "${#DEBIAN_ARTIFACT_COMMIT}" -eq 40
+          test "${#DEBIAN_ROOTFS_SHA256}" -eq 64
+
+      - name: Fetch pinned Debian rootfs
+        shell: bash
+        run: |
+          set -euo pipefail
+          source configs/linux/rootfs.env
+
+          mkdir upstream
+          git -C upstream init
+          git -C upstream remote add origin "$DEBIAN_ARTIFACT_REPOSITORY"
+          git -C upstream fetch --depth=1 origin "$DEBIAN_ARTIFACT_COMMIT"
+
+          resolved_commit=$(git -C upstream rev-parse FETCH_HEAD)
+          test "$resolved_commit" = "$DEBIAN_ARTIFACT_COMMIT"
+
+          git -C upstream checkout --detach FETCH_HEAD
+          test -s "upstream/$DEBIAN_ROOTFS_PATH"
+
+      - name: Verify and inspect rootfs
+        shell: bash
+        run: |
+          set -euo pipefail
+          source configs/linux/rootfs.env
+
+          mkdir -p out/rootfs
+          cp "upstream/$DEBIAN_ROOTFS_PATH" \
+            out/debian-${DEBIAN_VERSION}-${TARGET_ARCH}-rootfs.tar.xz
+
+          archive=out/debian-${DEBIAN_VERSION}-${TARGET_ARCH}-rootfs.tar.xz
+          actual_sha256=$(sha256sum "$archive" | awk '{print $1}')
+          test "$actual_sha256" = "$DEBIAN_ROOTFS_SHA256"
+
+          xz --test "$archive"
+          sudo tar --numeric-owner -xJpf "$archive" -C out/rootfs
+
+          test -x out/rootfs/bin/sh
+          test -r out/rootfs/etc/os-release
+          test -r out/rootfs/var/lib/dpkg/status
+          grep -Fqx 'VERSION_CODENAME=trixie' out/rootfs/etc/os-release
+          file -L out/rootfs/bin/sh | grep -Eq 'ARM aarch64|ARM64'
+
+          awk '
+            /^Package: / { package = $2 }
+            /^Version: / { version = $2 }
+            /^$/ {
+              if (package != "" && version != "") {
+                print package "\t" version
+              }
+              package = ""
+              version = ""
+            }
+            END {
+              if (package != "" && version != "") {
+                print package "\t" version
+              }
+            }
+          ' out/rootfs/var/lib/dpkg/status \
+            | sort > out/PACKAGES.tsv
+
+      - name: Create build manifest and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          source configs/linux/rootfs.env
+
+          cp configs/linux/rootfs.env out/requested-rootfs.env
+
+          control_plane_commit=$(git rev-parse HEAD)
+
+          cat > out/ROOTFS-MANIFEST.txt <<EOF
+          manifest_format=1
+          rootfs_build_version=$ROOTFS_BUILD_VERSION
+          control_plane_commit=$control_plane_commit
+          debian_suite=$DEBIAN_SUITE
+          debian_version=$DEBIAN_VERSION
+          debian_snapshot=$DEBIAN_SNAPSHOT
+          target_arch=$TARGET_ARCH
+          artifact_repository=$DEBIAN_ARTIFACT_REPOSITORY
+          artifact_commit=$DEBIAN_ARTIFACT_COMMIT
+          artifact_path=$DEBIAN_ROOTFS_PATH
+          rootfs_sha256=$DEBIAN_ROOTFS_SHA256
+          EOF
+
+          (
+            cd out
+            sha256sum \
+              debian-${DEBIAN_VERSION}-${TARGET_ARCH}-rootfs.tar.xz \
+              PACKAGES.tsv \
+              requested-rootfs.env \
+              ROOTFS-MANIFEST.txt \
+              > SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+
+      - name: Upload Debian rootfs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-${{ github.run_id }}-arm64-rootfs
+          path: |
+            out/debian-*-arm64-rootfs.tar.xz
+            out/PACKAGES.tsv
+            out/requested-rootfs.env
+            out/ROOTFS-MANIFEST.txt
+            out/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
