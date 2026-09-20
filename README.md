@@ -71,8 +71,7 @@ GitHub Actions build is only the first stage; it does not authorize flashing.
 1. [Build and verify the kernel artifact](docs/runbooks/01-build-and-verify-kernel.md).
 2. [Repack and temporarily boot the kernel](docs/runbooks/02-repack-and-temporarily-boot-kernel.md).
 3. [Validate the temporary kernel](docs/runbooks/03-validate-temporary-kernel.md).
-4. Stop before permanent installation until a separately reviewed installation
-   runbook exists.
+4. [Install and verify the tested kernel](docs/runbooks/04-install-and-verify-kernel.md).
 
 The exact build inputs and every intentional customization are described in
 [`docs/kernel/customization.md`](docs/kernel/customization.md). Reusable scripts
@@ -84,9 +83,9 @@ remain under the ignored `artifacts/` directory.
 
 Last updated: 2026-09-20
 
-Kernel build `0.1.0` has been reproducibly built, checksummed and successfully
-booted without flashing by using `fastboot boot`. The installed boot partition
-remains unchanged.
+Kernel build `0.1.0` has been reproducibly built, checksummed, temporarily
+tested and installed on slot A. It survived a second normal reboot and passed
+the complete persistent runtime validation.
 
 ### Current platform decision
 
@@ -99,7 +98,8 @@ kernel. Replacing the Android ROM is outside the current bootstrap plan.
 - Device: OnePlus Nord AC2003 (`avicii`), ARM64
 - Current operating system: CherishOS based on Android 14
 - Active slot: A
-- Current kernel: PSM Kernel 4.19.275
+- Original kernel: PSM Kernel 4.19.275
+- Installed kernel: `4.19.318-NordK3s-v0.1.0`
 - Root: Magisk 29.0
 - SELinux: enforcing
 - Bootloader: unlocked
@@ -193,11 +193,16 @@ is available through cgroup v2. Network forwarding is still disabled. The
 Linux userspace must receive an intentional cgroup layout and sysctl setup
 before containerd or K3s is installed.
 
-### Current safety boundary
+### Persistent-install result
 
 The generated `Image.gz-dtb` and `dtbo-raw.img` files are not directly
-flashable. The verified repacked boot image has not been installed
-persistently. Runtime validation has passed. Persistent installation remains
-blocked until a separate installation and rollback runbook has been reviewed
-and the phone is charged above 50 percent.
+flashable. Only the verified repacked boot image was written to `boot_a`. Its
+post-install partition checksum matched the temporarily tested image, and it
+survived a second normal reboot with Android, Magisk, SELinux, networking and
+the required container features working.
+
+Slot B was not modified. The original slot-A boot image and its checksum remain
+stored outside the repository as the rollback image. The next stage is Linux
+userspace and runtime provisioning; no container runtime or K3s service has
+been installed yet.
 <!-- bootstrap-status:end -->

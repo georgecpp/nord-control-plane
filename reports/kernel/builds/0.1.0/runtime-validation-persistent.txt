@@ -1,0 +1,12 @@
+Kernel: 4.19.318-NordK3s-v0.1.0
+PASS: requested kernel configuration
+PASS: PID namespace
+PASS: IPC namespace
+PASS: mount namespace
+PASS: network namespace
+PASS: PIDs controller available in cgroup v2
+PASS: devices cgroup
+PASS: OverlayFS
+IPv4 forwarding: 0
+IPv6 forwarding: 0
+PASS: kernel runtime validation
