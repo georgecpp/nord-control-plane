@@ -1,7 +1,7 @@
 # Nord Control Plane
 
-Infrastructure, documentation and automation for converting a OnePlus
-Nord AC2003 into a reproducible ARM64 home-server and Kubernetes node.
+Infrastructure, documentation and automation for converting a OnePlus Nord
+AC2003 into a reproducible ARM64 home-server and Kubernetes node.
 
 ## Target platform
 
@@ -61,15 +61,32 @@ Kubernetes workload definitions belong in
 │   └── linux/
 ├── checksums/
 └── README.md
+```
+
+## Kernel operator workflow
+
+The kernel workflow is deliberately split into reviewable stages. A successful
+GitHub Actions build is only the first stage; it does not authorize flashing.
+
+1. [Build and verify the kernel artifact](docs/runbooks/01-build-and-verify-kernel.md).
+2. [Repack and temporarily boot the kernel](docs/runbooks/02-repack-and-temporarily-boot-kernel.md).
+3. [Validate the temporary kernel](docs/runbooks/03-validate-temporary-kernel.md).
+4. Stop before permanent installation until a separately reviewed installation
+   runbook exists.
+
+The exact build inputs and every intentional customization are described in
+[`docs/kernel/customization.md`](docs/kernel/customization.md). Reusable scripts
+live in `scripts/kernel/`; generated images and downloaded workflow artifacts
+remain under the ignored `artifacts/` directory.
 
 <!-- bootstrap-status:start -->
-
 ## Bootstrap status
 
-Last updated: 2026-09-13
+Last updated: 2026-09-20
 
-The project has reached the first reproducible kernel-build milestone. No
-custom image has been booted or flashed to the phone yet.
+Kernel build `0.1.0` has been reproducibly built, checksummed and successfully
+booted without flashing by using `fastboot boot`. The installed boot partition
+remains unchanged.
 
 ### Current platform decision
 
@@ -161,22 +178,26 @@ The complete build recipe is version controlled:
 - each successful artifact contains the resolved configuration, configuration
   delta, patch checksums, input manifest and output checksums.
 
+### Temporary-boot result
+
+The repacked boot image passed a temporary `fastboot boot` test on slot A.
+Android 14 completed startup, ADB and Wi-Fi worked, external connectivity was
+available, Magisk root survived and SELinux remained enforcing. The running
+kernel reported `4.19.318-NordK3s-v0.1.0`, and the requested container features
+were present. Runtime tests passed for PID, IPC, mount and network namespaces,
+the PIDs controller, devices cgroup and OverlayFS.
+
+The remaining work is runtime provisioning. Android currently exposes a hybrid
+cgroup layout: several controllers are mounted using cgroup v1, while `pids`
+is available through cgroup v2. Network forwarding is still disabled. The
+Linux userspace must receive an intentional cgroup layout and sysctl setup
+before containerd or K3s is installed.
+
 ### Current safety boundary
 
-Build success does not establish device compatibility. The generated
-`Image.gz-dtb` and `dtbo-raw.img` files must not be flashed directly.
-
-The next stage is to:
-
-1. download and verify the CI artifact checksums;
-2. review the generated `kernel.config`;
-3. repack the backed-up active-slot boot image with the new kernel;
-4. test it temporarily using `fastboot boot`;
-5. verify Android startup, ADB, Wi-Fi, charging, Magisk root and the required
-   kernel features;
-6. install persistently only after the temporary boot passes.
-
-Linux userspace, containerd and K3s installation remain pending until that
-kernel validation is complete.
-
+The generated `Image.gz-dtb` and `dtbo-raw.img` files are not directly
+flashable. The verified repacked boot image has not been installed
+persistently. Runtime validation has passed. Persistent installation remains
+blocked until a separate installation and rollback runbook has been reviewed
+and the phone is charged above 50 percent.
 <!-- bootstrap-status:end -->
