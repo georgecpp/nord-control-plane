@@ -33,8 +33,8 @@ jobs:
             TARGET_ARCH
             DEBIAN_ARTIFACT_REPOSITORY
             DEBIAN_ARTIFACT_COMMIT
-            DEBIAN_ROOTFS_PATH
-            DEBIAN_ROOTFS_SHA256
+            DEBIAN_OCI_PATH
+            DEBIAN_OCI_MANIFEST_DIGEST
           )
 
           for name in "${required[@]}"; do
@@ -46,7 +46,7 @@ jobs:
 
           test "$TARGET_ARCH" = arm64
           test "${#DEBIAN_ARTIFACT_COMMIT}" -eq 40
-          test "${#DEBIAN_ROOTFS_SHA256}" -eq 64
+          test "${#DEBIAN_OCI_MANIFEST_DIGEST}" -eq 71
 
       - name: Fetch pinned Debian rootfs
         shell: bash
@@ -63,7 +63,7 @@ jobs:
           test "$resolved_commit" = "$DEBIAN_ARTIFACT_COMMIT"
 
           git -C upstream checkout --detach FETCH_HEAD
-          test -s "upstream/$DEBIAN_ROOTFS_PATH"
+          test -s "upstream/$DEBIAN_OCI_PATH/index.json"
 
       - name: Verify and inspect rootfs
         shell: bash
@@ -71,16 +71,37 @@ jobs:
           set -euo pipefail
           source configs/linux/rootfs.env
 
+          oci=upstream/$DEBIAN_OCI_PATH
+          index=$oci/index.json
+
+          mapfile -t manifests < <(jq -r '.manifests[].digest' "$index")
+          test "${#manifests[@]}" -eq 1
+          manifest_digest=${manifests[0]}
+          test "$manifest_digest" = "$DEBIAN_OCI_MANIFEST_DIGEST"
+
+          manifest=$oci/blobs/sha256/${manifest_digest#sha256:}
+          test -s "$manifest"
+          test "$(sha256sum "$manifest" | awk '{print "sha256:" $1}')" = \
+            "$manifest_digest"
+
+          mapfile -t layers < <(
+            jq -r \
+              '.layers[] | select(.mediaType | endswith("tar+gzip")) | .digest' \
+              "$manifest"
+          )
+          test "${#layers[@]}" -eq 1
+          layer_digest=${layers[0]}
+          layer=$oci/blobs/sha256/${layer_digest#sha256:}
+          test -s "$layer"
+          test "$(sha256sum "$layer" | awk '{print "sha256:" $1}')" = \
+            "$layer_digest"
+
           mkdir -p out/rootfs
-          cp "upstream/$DEBIAN_ROOTFS_PATH" \
-            out/debian-${DEBIAN_VERSION}-${TARGET_ARCH}-rootfs.tar.xz
+          archive=out/debian-${DEBIAN_VERSION}-${TARGET_ARCH}-rootfs.tar.gz
+          cp "$layer" "$archive"
 
-          archive=out/debian-${DEBIAN_VERSION}-${TARGET_ARCH}-rootfs.tar.xz
-          actual_sha256=$(sha256sum "$archive" | awk '{print $1}')
-          test "$actual_sha256" = "$DEBIAN_ROOTFS_SHA256"
-
-          xz --test "$archive"
-          sudo tar --numeric-owner -xJpf "$archive" -C out/rootfs
+          gzip --test "$archive"
+          sudo tar --numeric-owner -xzpf "$archive" -C out/rootfs
 
           test -x out/rootfs/bin/sh
           test -r out/rootfs/etc/os-release
@@ -115,6 +136,9 @@ jobs:
           cp configs/linux/rootfs.env out/requested-rootfs.env
 
           control_plane_commit=$(git rev-parse HEAD)
+          rootfs_sha256=$(sha256sum \
+            out/debian-${DEBIAN_VERSION}-${TARGET_ARCH}-rootfs.tar.gz |
+            awk '{print $1}')
 
           cat > out/ROOTFS-MANIFEST.txt <<EOF
           manifest_format=1
@@ -126,14 +150,15 @@ jobs:
           target_arch=$TARGET_ARCH
           artifact_repository=$DEBIAN_ARTIFACT_REPOSITORY
           artifact_commit=$DEBIAN_ARTIFACT_COMMIT
-          artifact_path=$DEBIAN_ROOTFS_PATH
-          rootfs_sha256=$DEBIAN_ROOTFS_SHA256
+          oci_path=$DEBIAN_OCI_PATH
+          oci_manifest_digest=$DEBIAN_OCI_MANIFEST_DIGEST
+          rootfs_sha256=$rootfs_sha256
           EOF
 
           (
             cd out
             sha256sum \
-              debian-${DEBIAN_VERSION}-${TARGET_ARCH}-rootfs.tar.xz \
+              debian-${DEBIAN_VERSION}-${TARGET_ARCH}-rootfs.tar.gz \
               PACKAGES.tsv \
               requested-rootfs.env \
               ROOTFS-MANIFEST.txt \
@@ -146,7 +171,7 @@ jobs:
         with:
           name: debian-${{ github.run_id }}-arm64-rootfs
           path: |
-            out/debian-*-arm64-rootfs.tar.xz
+            out/debian-*-arm64-rootfs.tar.gz
             out/PACKAGES.tsv
             out/requested-rootfs.env
             out/ROOTFS-MANIFEST.txt

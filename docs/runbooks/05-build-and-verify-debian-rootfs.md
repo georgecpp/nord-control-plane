@@ -56,7 +56,7 @@ match `configs/linux/rootfs.env`.
 
 ## Artifact contents
 
-- `debian-13.7-arm64-rootfs.tar.xz`: root filesystem to extract on the phone
+- `debian-13.7-arm64-rootfs.tar.gz`: root filesystem to extract on the phone
 - `PACKAGES.tsv`: package inventory from the Debian dpkg database
 - `requested-rootfs.env`: pinned build inputs
 - `ROOTFS-MANIFEST.txt`: resolved provenance and repository commit
